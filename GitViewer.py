@@ -10,7 +10,7 @@
 # ╠══════════════════════════════════════════════════════════════╣
 # ║  Project     : GitHub Viewer                                 ║
 # ║  Author      : SwiftGlitxh                                   ║
-# ║  Version     : 1.0.0                                         ║
+# ║  Version     : 1.1.0                                         ║
 # ║  Description : A simple tool to view GitHub profiles and     ║
 # ║                repositories from the command line.           ║
 # ╠══════════════════════════════════════════════════════════════╣
@@ -37,12 +37,12 @@ class GitViewer:
         if self.verbose:
             print(f"[+] {message}")
 
-    def GitRequest(self):
-        url = f"{self.api}{self.username}"
+    def Get(self, url, params=None):
+        """GET a URL and return parsed JSON, or None on any error."""
         self.log(f"Requesting {url}")
 
         try:
-            r = requests.get(url, timeout=10)
+            r = requests.get(url, params=params, timeout=10)
         except requests.RequestException as e:
             print(f"Network error: {e}")
             return None
@@ -51,7 +51,10 @@ class GitViewer:
         self.log(f"Rate limit remaining: {r.headers.get('X-RateLimit-Remaining', 'unknown')}")
 
         if r.status_code == 404:
-            print(f"User '{self.username}' not found.")
+            print(f"Not found: {url}")
+            return None
+        if r.status_code == 403:
+            print("Request blocked (likely rate limited). Try again later.")
             return None
         if r.status_code != 200:
             print(f"Request failed with status {r.status_code}.")
@@ -59,7 +62,54 @@ class GitViewer:
 
         return r.json()
 
-    def BuildReport(self, data):
+    def GitRequest(self):
+        return self.Get(f"{self.api}{self.username}")
+
+    def LastUpload(self):
+        """Most recently pushed repo."""
+        repos = self.Get(f"{self.api}{self.username}/repos",
+                         params={"sort": "pushed", "per_page": 1})
+        return repos[0] if repos else None
+
+    def LastActivity(self):
+        """Most recent public event."""
+        events = self.Get(f"{self.api}{self.username}/events/public",
+                          params={"per_page": 1})
+        return events[0] if events else None
+
+    @staticmethod
+    def DescribeEvent(event):
+        """Turn a raw event into a short readable summary."""
+        etype = event["type"]
+        payload = event.get("payload", {})
+        action = payload.get("action", "")
+
+        if etype == "PushEvent":
+            ref = payload.get("ref", "").replace("refs/heads/", "")
+            return f"Pushed to {ref}" if ref else "Pushed commits"
+        if etype == "CreateEvent":
+            return f"Created {payload.get('ref_type', 'item')}"
+        if etype == "DeleteEvent":
+            return f"Deleted {payload.get('ref_type', 'item')}"
+        if etype == "WatchEvent":
+            return "Starred a repo"
+        if etype == "ForkEvent":
+            return "Forked a repo"
+        if etype == "IssuesEvent":
+            return f"{action.capitalize()} an issue"
+        if etype == "IssueCommentEvent":
+            return "Commented on an issue"
+        if etype == "PullRequestEvent":
+            return f"{action.capitalize()} a pull request"
+        if etype == "PullRequestReviewEvent":
+            return "Reviewed a pull request"
+        if etype == "ReleaseEvent":
+            return f"{action.capitalize()} a release"
+        if etype == "PublicEvent":
+            return "Made a repo public"
+        return etype.replace("Event", "")
+
+    def BuildReport(self, data, last_repo, last_event):
         lines = [
             f"Username     : {data['login']}",
             f"Name         : {data['name'] or 'N/A'}",
@@ -85,6 +135,38 @@ class GitViewer:
                 f"Repos URL    : {data['repos_url']}",
             ]
 
+        # Last upload (most recently pushed repo)
+        lines.append("-" * 40)
+        if last_repo:
+            pushed = (last_repo.get("pushed_at") or "")
+            lines.append(f"Last upload  : {last_repo['name']} ({pushed[:10]} {pushed[11:16]} UTC)")
+            if self.verbose:
+                lines += [
+                    f"  Description: {last_repo['description'] or 'N/A'}",
+                    f"  Language   : {last_repo['language'] or 'N/A'}",
+                    f"  Stars      : {last_repo['stargazers_count']}",
+                    f"  Forked     : {'Yes' if last_repo['fork'] else 'No'}",
+                    f"  URL        : {last_repo['html_url']}",
+                ]
+        else:
+            lines.append("Last upload  : N/A (no public repos)")
+
+        # Last activity (most recent public event)
+        if last_event:
+            when = last_event["created_at"]
+            lines.append(f"Last activity: {self.DescribeEvent(last_event)} "
+                         f"in {last_event['repo']['name']} "
+                         f"({when[:10]} {when[11:16]} UTC)")
+            if self.verbose:
+                payload = last_event.get("payload", {})
+                commits = payload.get("commits") or []
+                if commits:
+                    msg = commits[-1]["message"].splitlines()[0]
+                    lines.append(f"  Commit msg : {msg}")
+                lines.append(f"  Event type : {last_event['type']}")
+        else:
+            lines.append("Last activity: N/A (no recent public activity)")
+
         return lines
 
     def SaveOutput(self, data, lines):
@@ -106,14 +188,22 @@ class GitViewer:
         if data is None:
             return False
 
-        lines = self.BuildReport(data)
+        last_repo = self.LastUpload()
+        last_event = self.LastActivity()
+
+        lines = self.BuildReport(data, last_repo, last_event)
 
         print("=" * 40)
         print("\n".join(lines))
         print("=" * 40)
 
         if self.output:
-            return self.SaveOutput(data, lines)
+            combined = {
+                "profile": data,
+                "last_upload": last_repo,
+                "last_activity": last_event,
+            }
+            return self.SaveOutput(combined, lines)
 
         return True
 
