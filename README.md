@@ -44,6 +44,6 @@ python github_viewer.py -u SwiftGlitxh
 > Replace `github_viewer.py` with your actual Python script filename if different.
 
 ## Usage
-<img width="548" height="434" alt="image" src="https://github.com/user-attachments/assets/8a4a0ce1-0482-489a-a0f6-3446e67c6742" />
+<img width="1621" height="631" alt="image" src="https://github.com/user-attachments/assets/788db625-64b8-4cb7-90b8-1a9035f8d801" />
 
 ### Basic
