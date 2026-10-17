@@ -1,4 +1,5 @@
 # GitHub Profile Viewer
+<img width="1672" height="941" alt="43d39089-1c26-4ad6-ae51-7185b087db8b" src="https://github.com/user-attachments/assets/a82cc1d3-35bb-48a4-b7a9-5b1b062172e7" />
 
 A lightweight Python command-line tool for retrieving and displaying GitHub user profiles using the **GitHub REST API**.
 
