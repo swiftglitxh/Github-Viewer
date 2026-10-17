@@ -10,32 +10,75 @@
 # ╠══════════════════════════════════════════════════════════════╣
 # ║  Project     : GitHub Viewer                                 ║
 # ║  Author      : SwiftGlitxh                                   ║
-# ║  Version     : 1.1.0                                         ║
+# ║  Version     : 1.2.0                                         ║
 # ║  Description : A simple tool to view GitHub profiles and     ║
 # ║                repositories from the command line.           ║
 # ╠══════════════════════════════════════════════════════════════╣
-# ║  Imports     : argparse, json, sys                           ║
+# ║  Usage       : python gitviewer.py -u <username>             ║
+# ║  Flags       : -u, --username  GitHub user to look up        ║
+# ║                -v, --verbose   show extra details            ║
+# ║                -o, --output    save to FILE (.json or text)  ║
+# ║                --no-color      disable colours               ║
+# ║                --no-icons      disable emoji icons           ║
+# ╠══════════════════════════════════════════════════════════════╣
+# ║  Imports     : argparse, json, os, sys                       ║
 # ║                requests (third-party)                        ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 import argparse
 import json
+import os
 import sys
 
 import requests
 
+os.system("")  # enables ANSI colours on Windows terminals
+
+GREEN = "\033[92m"
+DARK = "\033[32m"
+CYAN = "\033[96m"
+RED = "\033[91m"
+RESET = "\033[0m"
+
+RULE = "=" * 40
+LABEL_W = 14           # label column on rows that have an icon
+TOP_W = LABEL_W + 3    # same column for rows without one (icon + space = 3 cells)
+
+# Every icon is a double-width emoji, so the colons stay lined up.
+ICONS = {
+    "location": "📍", "company": "🏢", "repos": "📦", "followers": "👥",
+    "following": "👤", "created": "📅", "url": "🔗", "email": "📧",
+    "blog": "🌐", "twitter": "🐦", "hireable": "💼", "gists": "📝",
+    "updated": "🔄", "avatar": "📷", "repos_url": "📂",
+    "upload": "📤", "activity": "🕒",
+}
+
+
+def disable_color():
+    global GREEN, DARK, CYAN, RED, RESET
+    GREEN = DARK = CYAN = RED = RESET = ""
+
 
 class GitViewer:
-    def __init__(self, username, verbose=False, output=None,
+    def __init__(self, username, verbose=False, output=None, icons=True,
                  api="https://api.github.com/users/"):
         self.username = username
         self.verbose = verbose
         self.output = output
+        self.icons = icons
         self.api = api
+
+    # ─── Logging ───────────────────────────────────────────────
 
     def log(self, message):
         if self.verbose:
-            print(f"[+] {message}")
+            print(f"{DARK}[+] {message}{RESET}")
+
+    @staticmethod
+    def err(message):
+        print(f"{RED}[!] {message}{RESET}", file=sys.stderr)
+
+    # ─── API ───────────────────────────────────────────────────
 
     def Get(self, url, params=None):
         """GET a URL and return parsed JSON, or None on any error."""
@@ -44,20 +87,20 @@ class GitViewer:
         try:
             r = requests.get(url, params=params, timeout=10)
         except requests.RequestException as e:
-            print(f"Network error: {e}")
+            self.err(f"Network error: {e}")
             return None
 
         self.log(f"Status code: {r.status_code}")
         self.log(f"Rate limit remaining: {r.headers.get('X-RateLimit-Remaining', 'unknown')}")
 
         if r.status_code == 404:
-            print(f"Not found: {url}")
+            self.err(f"Not found: {url}")
             return None
         if r.status_code == 403:
-            print("Request blocked (likely rate limited). Try again later.")
+            self.err("Request blocked (likely rate limited). Try again later.")
             return None
         if r.status_code != 200:
-            print(f"Request failed with status {r.status_code}.")
+            self.err(f"Request failed with status {r.status_code}.")
             return None
 
         return r.json()
@@ -109,65 +152,128 @@ class GitViewer:
             return "Made a repo public"
         return etype.replace("Event", "")
 
-    def BuildReport(self, data, last_repo, last_event):
-        lines = [
-            f"Username     : {data['login']}",
-            f"Name         : {data['name'] or 'N/A'}",
-            f"Bio          : {data['bio'] or 'N/A'}",
-            f"Location     : {data['location'] or 'N/A'}",
-            f"Company      : {data['company'] or 'N/A'}",
-            f"Public repos : {data['public_repos']}",
-            f"Followers    : {data['followers']}",
-            f"Following    : {data['following']}",
-            f"Created      : {data['created_at'][:10]}",
-            f"Profile URL  : {data['html_url']}",
+    # ─── Report ────────────────────────────────────────────────
+    #
+    # The report is built as a list of "rows" first, then rendered twice:
+    # once with colours and icons for the terminal, once as plain text for -o.
+    #
+    #   ("sep",)                                    a ==== rule
+    #   ("top", label, value)                       row without an icon
+    #   ("cont", text)                              extra bio line (cyan)
+    #   ("item", icon_key, label, value, stamp)     row with an icon
+    #   ("sub", label, value)                       indented verbose detail
+    #   ("stamp", text)                             green timestamp on its own line
+
+    def BuildRows(self, data, last_repo, last_event):
+        bio = [b.strip() for b in (data["bio"] or "").replace("\r", "").split("\n")]
+        bio = [b for b in bio if b]
+
+        rows = [
+            ("sep",),
+            ("top", "Username", data["login"]),
+            ("top", "Name", data["name"] or "N/A"),
+            ("top", "Bio", bio[0] if bio else "N/A"),
+        ]
+        rows += [("cont", line) for line in bio[1:]]
+        rows += [
+            ("item", "location", "Location", data["location"] or "N/A", None),
+            ("item", "company", "Company", data["company"] or "N/A", None),
+            ("item", "repos", "Public repos", data["public_repos"], None),
+            ("item", "followers", "Followers", data["followers"], None),
+            ("item", "following", "Following", data["following"], None),
+            ("item", "created", "Created", data["created_at"][:10], None),
+            ("item", "url", "Profile URL", data["html_url"], None),
         ]
 
         if self.verbose:
-            lines += [
-                f"Email        : {data['email'] or 'N/A'}",
-                f"Blog         : {data['blog'] or 'N/A'}",
-                f"Twitter      : {data['twitter_username'] or 'N/A'}",
-                f"Hireable     : {data['hireable'] if data['hireable'] is not None else 'N/A'}",
-                f"Public gists : {data['public_gists']}",
-                f"Updated      : {data['updated_at'][:10]}",
-                f"Avatar URL   : {data['avatar_url']}",
-                f"Repos URL    : {data['repos_url']}",
+            hireable = data["hireable"] if data["hireable"] is not None else "N/A"
+            rows += [
+                ("item", "email", "Email", data["email"] or "N/A", None),
+                ("item", "blog", "Blog", data["blog"] or "N/A", None),
+                ("item", "twitter", "Twitter", data["twitter_username"] or "N/A", None),
+                ("item", "hireable", "Hireable", hireable, None),
+                ("item", "gists", "Public gists", data["public_gists"], None),
+                ("item", "updated", "Updated", data["updated_at"][:10], None),
+                ("item", "avatar", "Avatar URL", data["avatar_url"], None),
+                ("item", "repos_url", "Repos URL", data["repos_url"], None),
             ]
 
+        rows.append(("sep",))
+
         # Last upload (most recently pushed repo)
-        lines.append("-" * 40)
         if last_repo:
-            pushed = (last_repo.get("pushed_at") or "")
-            lines.append(f"Last upload  : {last_repo['name']} ({pushed[:10]} {pushed[11:16]} UTC)")
+            pushed = last_repo.get("pushed_at") or ""
+            stamp = f"({pushed[:10]} {pushed[11:16]} UTC)" if pushed else None
+            rows.append(("item", "upload", "Last upload", last_repo["name"], stamp))
             if self.verbose:
-                lines += [
-                    f"  Description: {last_repo['description'] or 'N/A'}",
-                    f"  Language   : {last_repo['language'] or 'N/A'}",
-                    f"  Stars      : {last_repo['stargazers_count']}",
-                    f"  Forked     : {'Yes' if last_repo['fork'] else 'No'}",
-                    f"  URL        : {last_repo['html_url']}",
+                rows += [
+                    ("sub", "Description", last_repo["description"] or "N/A"),
+                    ("sub", "Language", last_repo["language"] or "N/A"),
+                    ("sub", "Stars", last_repo["stargazers_count"]),
+                    ("sub", "Forked", "Yes" if last_repo["fork"] else "No"),
+                    ("sub", "URL", last_repo["html_url"]),
                 ]
         else:
-            lines.append("Last upload  : N/A (no public repos)")
+            rows.append(("item", "upload", "Last upload", "N/A (no public repos)", None))
 
         # Last activity (most recent public event)
         if last_event:
             when = last_event["created_at"]
-            lines.append(f"Last activity: {self.DescribeEvent(last_event)} "
-                         f"in {last_event['repo']['name']} "
-                         f"({when[:10]} {when[11:16]} UTC)")
+            text = f"{self.DescribeEvent(last_event)} in {last_event['repo']['name']}"
+            rows.append(("item", "activity", "Last activity", text, None))
+            rows.append(("stamp", f"({when[:10]} {when[11:16]} UTC)"))
             if self.verbose:
-                payload = last_event.get("payload", {})
-                commits = payload.get("commits") or []
+                commits = last_event.get("payload", {}).get("commits") or []
                 if commits:
                     msg = commits[-1]["message"].splitlines()[0]
-                    lines.append(f"  Commit msg : {msg}")
-                lines.append(f"  Event type : {last_event['type']}")
+                    rows.append(("sub", "Commit msg", msg))
+                rows.append(("sub", "Event type", last_event["type"]))
         else:
-            lines.append("Last activity: N/A (no recent public activity)")
+            rows.append(("item", "activity", "Last activity",
+                         "N/A (no recent public activity)", None))
+
+        return rows
+
+    def Render(self, rows, fancy=True):
+        """Turn rows into text lines. fancy=True adds colours and icons."""
+        use_icons = fancy and self.icons
+        lines = []
+
+        for row in rows:
+            kind = row[0]
+
+            if kind == "sep":
+                lines.append(f"{GREEN}{RULE}{RESET}" if fancy else RULE)
+
+            elif kind == "top":
+                _, label, value = row
+                lines.append(f"{label:<{TOP_W}}: {value}")
+
+            elif kind == "cont":
+                lines.append(f"{CYAN}{row[1]}{RESET}" if fancy else row[1])
+
+            elif kind == "item":
+                _, key, label, value, stamp = row
+                if use_icons:
+                    head = f"{ICONS[key]} {label:<{LABEL_W}}"
+                else:
+                    head = f"{label:<{TOP_W}}"
+                line = f"{head}: {value}"
+                if stamp:
+                    line += f" {GREEN}{stamp}{RESET}" if fancy else f" {stamp}"
+                lines.append(line)
+
+            elif kind == "sub":
+                _, label, value = row
+                lines.append(f"  {label:<{TOP_W - 2}}: {value}")
+
+            elif kind == "stamp":
+                pad = " " * (TOP_W + 2)
+                lines.append(f"{pad}{GREEN}{row[1]}{RESET}" if fancy else f"{pad}{row[1]}")
 
         return lines
+
+    # ─── Saving and main flow ──────────────────────────────────
 
     def SaveOutput(self, data, lines):
         try:
@@ -177,7 +283,7 @@ class GitViewer:
                 else:
                     f.write("\n".join(lines) + "\n")
         except OSError as e:
-            print(f"Could not write to '{self.output}': {e}")
+            self.err(f"Could not write to '{self.output}': {e}")
             return False
 
         self.log(f"Saved output to {self.output}")
@@ -191,11 +297,9 @@ class GitViewer:
         last_repo = self.LastUpload()
         last_event = self.LastActivity()
 
-        lines = self.BuildReport(data, last_repo, last_event)
+        rows = self.BuildRows(data, last_repo, last_event)
 
-        print("=" * 40)
-        print("\n".join(lines))
-        print("=" * 40)
+        print("\n".join(self.Render(rows, fancy=True)))
 
         if self.output:
             combined = {
@@ -203,7 +307,7 @@ class GitViewer:
                 "last_upload": last_repo,
                 "last_activity": last_event,
             }
-            return self.SaveOutput(combined, lines)
+            return self.SaveOutput(combined, self.Render(rows, fancy=False))
 
         return True
 
@@ -218,10 +322,26 @@ def parse_args():
                         help="show extra details and request info")
     parser.add_argument("-o", "--output", metavar="FILE",
                         help="save the result to FILE (.json for JSON, otherwise plain text)")
+    parser.add_argument("--no-color", action="store_true",
+                        help="disable coloured output")
+    parser.add_argument("--no-icons", action="store_true",
+                        help="disable emoji icons (for terminals that can't show them)")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
+    # Emoji in bios and icons would crash a legacy Windows console without this.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
     args = parse_args()
-    GT = GitViewer(args.username, verbose=args.verbose, output=args.output)
+
+    if args.no_color or os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        disable_color()
+
+    GT = GitViewer(args.username, verbose=args.verbose, output=args.output,
+                   icons=not args.no_icons)
     sys.exit(0 if GT.ShowProfile() else 1)
